@@ -145,7 +145,7 @@ var competitionIndex = 0;
 var globalBetsCount = 0;
 var globalBetsGathered = 0;
 
-console.log("Starting web scraper for gathering bets on winamax.fr.")
+console.log("Starting web scraper for gathering bets on winamax.fr.");
 
 // première page
 casper.start('https://www.winamax.fr/paris-sportifs#!/sports');
@@ -242,7 +242,9 @@ casper.on('next.competition', function() {
 	});
 });
 
-casper.run();
+casper.run(function() {
+	this.exit();
+});
 
 
 function splitTitle(title) {
