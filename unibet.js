@@ -1,3 +1,5 @@
+var process = {argv: [], env: {COLORTERM: true}}; // pour corriger un bug avec le module "colors"
+
 var json2xls = require('json2xls');
 var colors = require('colors');
 var fs = require('fs');
@@ -19,16 +21,16 @@ var casper = require('casper').create({
 });
 casper.userAgent('Mozilla/5.0 (Windows NT 6.1; WOW64; rv:49.0) Gecko/20100101 Firefox/49.0');
 casper.on('remote.message', function(message) {
-	this.echo(('remote.message : ' + JSON.stringify(message)).red);
+	log(ERROR, 'remote.message : ' + JSON.stringify(message));
 });
 casper.on("page.error", function(message) {
-	this.echo(('page.error : ' + JSON.stringify(message)).red);
+	log(ERROR, 'page.error : ' + JSON.stringify(message));
 });
 casper.on("resource.error", function(message) {
-	this.echo(('resource.error : ' + JSON.stringify(message)).red);
+	log(ERROR, 'resource.error : ' + JSON.stringify(message));
 });
 casper.on('error', function(message) {
-	this.echo(('error : ' + JSON.stringify(message)).red);
+	log(ERROR, 'error : ' + JSON.stringify(message));
 });
 
 /* Log levels (syslog) */
@@ -41,31 +43,14 @@ var NOTICE = 5; // a normal but significant condition
 var INFO = 6; // a purely informational message
 var DEBUG = 7; // messages to debug an application
 
+var htmlMode = casper.cli.args == 'html-mode';
 var startTime;
 var sports = [];
-function sport(title, betsCount) {
-	this.title = title;
-	this.betsCount = betsCount;
-	this.competitions = [];
-}
-function competition(title, betsCount) {
-	this.title = title;
-	this.betsCount = betsCount;
-	this.categories = [];
-}
-function category(title, betsCount) {
-	this.title = title;
-	this.betsCount = betsCount;
-	this.bets = [];
-}
-function bet(type, competition, title, date, time, odds) {
-	this.type = type;
-	this.competition = competition;
-	this.title = title;
-	this.date = date;
-	this.time = time;
-	this.odds = odds;
-}
+var bets = [];
+// sport = title, expectedBetsCount, retrievedBetsCount, competitions
+// competition = title, expectedBetsCount, retrievedBetsCount, categories
+// category = title, expectedBetsCount, retrievedBetsCount
+// bet = sport, competition, category, type, title, date, time, odds
 
 function retrieveSports() {
 	log(INFO, "Retrieving sports on \"unibet.fr\"...");
@@ -80,7 +65,7 @@ function retrieveSports() {
 				var title = $(this).find('.head .linkaction .label').text();
 				var betsCount = $(this).find('.head > .arrowaction > span:nth-child(1)').text();
 				if(title != 'Cotes Boostées')
-					sports.push({title: title.split(/ |-/)[0], betsCount: betsCount});
+					sports.push({title: title.split(/ |-/)[0], expectedBetsCount: parseInt(betsCount), retrievedBetsCount: 0});
 			});
 			return sports;
 		});
@@ -98,7 +83,7 @@ function retrieveCompetitions(sportIndex) {
 			$('#boostedsportsmenu > div:nth-child(2) > ul:nth-child(1) > li:nth-child(' + (sportIndex + 2) + ') > ul > li').each(function(index) {
 				var title = $(this).find('.head .linkaction .label').text();
 				var betsCount = $(this).find('.head > .arrowaction > span:nth-child(1)').text();
-				competitions.push({title: title, betsCount: betsCount});
+				competitions.push({title: title, expectedBetsCount: parseInt(betsCount), retrievedBetsCount: 0});
 			});
 			return competitions;
 		}, sportIndex);
@@ -108,19 +93,21 @@ function retrieveCompetitions(sportIndex) {
 }
 
 function retrieveCategories(sportIndex, competitionIndex) {
-	log(INFO, "Retrieving categories for \"" + sports[sportIndex].competitions[competitionIndex].title + "\" for \"" + sports[sportIndex].title + "\"...");
-	casper.click('#boostedsportsmenu > .content > ul:nth-child(1) > li:nth-child(' + (sportIndex + 2) + ') > .level1 > li:nth-child(' + (competitionIndex + 1) + ') > div > .linkaction');
+	log(INFO, "Retrieving categories for \"" + sports[sportIndex].competitions[competitionIndex].title + "\" for \"" + 
+		sports[sportIndex].title + "\"...");
+	casper.click('#boostedsportsmenu > .content > ul:nth-child(1) > li:nth-child(' + (sportIndex + 2) + ') > .level1 > li:nth-child(' + 
+		(competitionIndex + 1) + ') > div > .linkaction');
 	casper.waitFor(function() {
-		return this.evaluate(function(sportTitle) {
-			return $('.depth-2').text().split(/ |-/)[0] == sportTitle;
-		}, sports[sportIndex].title);
+		return this.evaluate(function(competitionTitle) {
+			return $('.depth-3').text() == competitionTitle && $('.eventpath-wrapper').length;
+		}, sports[sportIndex].competitions[competitionIndex].title);
 	}, function() {
 		sports[sportIndex].competitions[competitionIndex].categories = this.evaluate(function() {
 			var categories = [];
 			$('.marketstypes-list > li').each(function(index) {
 				var title = $(this).find('span').text().split(' (')[0];
 				var betsCount = $(this).find('small').text().replace(/\(|\)/g, '');
-				categories.push({title: title, betsCount: betsCount});
+				categories.push({title: title, expectedBetsCount: parseInt(betsCount), retrievedBetsCount: 0});
 			});
 			return categories;
 		});
@@ -135,14 +122,13 @@ function retrieveBets(sportIndex, competitionIndex, categoryIndex) {
 		sports[sportIndex].competitions[competitionIndex].title + "\" for \"" + sports[sportIndex].title + "\"...");
 	casper.click('.marketstypes-list > li:nth-child(' + (categoryIndex + 1) + ')');
 	casper.waitForSelector('.eventpath-wrapper > h2', function() {
-		sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].bets = this.evaluate(function() {
-			// dépliage de tous les options de pari
-			//$('.fa.fa-fw').each(function(index) {
-			//	$(this).click();
-			//});
-
-
-			var bets = [];
+		this.evaluate(function() {
+			$('i.fa.fa-fw').each(function(elt) {
+				$(elt).click();
+			});
+		});
+		var localBets = casper.evaluate(function(sportTitle, categoryTitle) {
+			var localBets = [];
 			var bet = {};
 			var type;
 			var date;
@@ -152,6 +138,8 @@ function retrieveBets(sportIndex, competitionIndex, categoryIndex) {
 					date = $(this).find('h2').text();
 					$(this).find('.inline-market.cell, .block-market.cell').each(function(index) {
 						bet = {};
+						bet.sport = sportTitle;
+						bet.category = categoryTitle;
 						bet.type = type;
 						bet.date = date;
 						bet.title = $(this).find('a > span:nth-child(1)').text().trim();
@@ -161,31 +149,65 @@ function retrieveBets(sportIndex, competitionIndex, categoryIndex) {
 						$(this).find('.oddc').each(function(index) {
 							bet.odds.push({label: $(this).find('.label').text(), price: $(this).find('.price').text()});
 						});
-						if(bet.type == "" || bet.competition == "" || bet.title == "" || bet.date == "" || bet.time == "" || bet.odds == [])
+						bet.odds = JSON.stringify(bet.odds);
+						if(bet.type == "" || bet.competition == "" || bet.title == "" || bet.date == "" || bet.time == "" || bet.odds == "[]")
 							console.log("Failed to retrieve a bet : " + JSON.stringify(bet));
 						else
-							bets.push(bet);
+							localBets.push(bet);
 					});
 				});
 			});
-			return bets;
-		});
-		log(INFO, sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].bets.length + "/" + 
-			sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].betsCount +  " bets retrieved for \"" + 
-			sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].title + "\" for \"" + 
-			sports[sportIndex].competitions[competitionIndex].title + "\" for \"" + 
-			sports[sportIndex].title + "\".");
+			return localBets;
+		}, sports[sportIndex].title, sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].title);
+
+		for(var i in localBets)
+			bets.push(localBets[i]);
+		sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].retrievedBetsCount += localBets.length;
+		sports[sportIndex].competitions[competitionIndex].retrievedBetsCount += localBets.length;
+		sports[sportIndex].retrievedBetsCount += localBets.length;
+
 		nextStep(sportIndex, competitionIndex, categoryIndex);
 	});
 }
 
 function nextStep(sportIndex, competitionIndex, categoryIndex) {
+	// fin d'une catégorie
+	var realityNumber = sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].retrievedBetsCount;
+	var expectedNumber = sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].expectedBetsCount;
+	log(realityNumber != expectedNumber ? WARNING : INFO, realityNumber + "/" + expectedNumber + " bets retrieved for \"" + 
+		sports[sportIndex].competitions[competitionIndex].categories[categoryIndex].title + "\" for \"" + 
+		sports[sportIndex].competitions[competitionIndex].title + "\" for \"" + 
+		sports[sportIndex].title + "\".");
+
 	if(++categoryIndex < sports[sportIndex].competitions[competitionIndex].categories.length)
 		retrieveBets(sportIndex, competitionIndex, categoryIndex);
-	else if(++competitionIndex < sports[sportIndex].competitions.length)
-		retrieveCategories(sportIndex, competitionIndex);
-	else if(++sportIndex < sports.length)
-		retrieveCompetitions(sportIndex);
+	else { // fin d'une compétition
+		var realityNumber = sports[sportIndex].competitions[competitionIndex].retrievedBetsCount;
+		var expectedNumber = sports[sportIndex].competitions[competitionIndex].expectedBetsCount;
+		log(realityNumber != expectedNumber ? WARNING : INFO, realityNumber + "/" + expectedNumber + " bets retrieved for \"" + 
+			sports[sportIndex].competitions[competitionIndex].title + "\" for \"" + 
+			sports[sportIndex].title + "\".");
+
+		if(++competitionIndex < sports[sportIndex].competitions.length) {
+			retrieveCategories(sportIndex, competitionIndex);
+		}
+		else { // fin d'un sport
+			var realityNumber = sports[sportIndex].retrievedBetsCount;
+			var expectedNumber = sports[sportIndex].expectedBetsCount;
+			log(realityNumber != expectedNumber ? WARNING : INFO, realityNumber + "/" + expectedNumber + " bets retrieved for \"" + 
+				sports[sportIndex].title + "\".");
+
+			if(++sportIndex < sports.length)
+				retrieveCompetitions(sportIndex);
+			else { // fin de la collecte
+				log(NOTICE, "Gathering done, " + bets.length + "/" + computeTotalBets() + " bets gathered in " +
+					Math.round((new Date().getTime() - startTime) / 1000) + " seconds.");
+				log(NOTICE, "Generating output file...");
+				fs.write('out.xlsx', json2xls(bets, {fields: ['sport', 'category', 'competition', 'type', 'title', 'date', 'time', 'odds']}), 'b');
+				log(NOTICE, "Output file generated.");
+			}
+		}
+	}
 }
 
 startTime = new Date().getTime();
@@ -196,14 +218,35 @@ casper.run(function() {
 });
 
 function log(level, msg) {
-	if(level in [EMERGENCY, ALERT, CRITICAL, ERROR])
-		console.error(msg.red);
-	else if(level == WARNING)
-		console.log(msg.yellow);
-	else if(level == NOTICE)
-		console.log(msg.blue);
-	else if(level == INFO)
-		console.log(msg.green);
-	else if(level == DEBUG && debugMode)
-		console.log(msg.white);
+	if(htmlMode) {
+		if(level in [EMERGENCY, ALERT, CRITICAL, ERROR])
+			console.log('{"content":"' + msg.replace(/"/g, '\\"') + '","color":"red"}');
+		else if(level == WARNING)
+			console.log('{"content":"' + msg.replace(/"/g, '\\"') + '","color":"orange"}');
+		else if(level == NOTICE)
+			console.log('{"content":"' + msg.replace(/"/g, '\\"') + '","color":"blue"}');
+		else if(level == INFO)
+			console.log('{"content":"' + msg.replace(/"/g, '\\"') + '","color":"green"}');
+		else if(level == DEBUG)
+			console.log('{"content":"' + msg.replace(/"/g, '\\"') + '","color":"black"}');
+	}
+	else {
+		if(level in [EMERGENCY, ALERT, CRITICAL, ERROR])
+			console.log(msg.red);
+		else if(level == WARNING)
+			console.log(msg.yellow);
+		else if(level == NOTICE)
+			console.log(msg.blue);
+		else if(level == INFO)
+			console.log(msg.green);
+		else if(level == DEBUG)
+			console.log(msg.white);
+	}
+}
+
+function computeTotalBets() {
+	var sum = 0;
+	for(var i in sports)
+		sum += sports[i].expectedBetsCount;
+	return sum;
 }

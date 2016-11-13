@@ -1,7 +1,7 @@
 var json2xls = require('json2xls');
 var fs = require('fs');
 var casper = require('casper').create({
-	//verbose: true,
+	verbose: false,
 	logLevel: 'debug',
 	waitTimeout: 10000
 });
