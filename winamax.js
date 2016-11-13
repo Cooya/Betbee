@@ -1,5 +1,5 @@
-var json2xls = require('json2xls');
 var fs = require('fs');
+var json2xls = require('json2xls');
 var casper = require('casper').create({
 	verbose: false,
 	logLevel: 'debug',

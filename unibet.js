@@ -1,8 +1,8 @@
 var process = {argv: [], env: {COLORTERM: true}}; // pour corriger un bug avec le module "colors"
 
+var fs = require('fs');
 var json2xls = require('json2xls');
 var colors = require('colors');
-var fs = require('fs');
 var casper = require('casper').create({
 	verbose: false,
 	logLevel: 'debug',
